@@ -93,3 +93,21 @@ PRICE_SUPPORT_PERIODS_POINTS = [
         "MIN_WINDOW_VOLUME": 4,   # минимум точек (points_count) в окне
     },
 ]
+
+# ----------------------------
+# Steam Market API settings (direct API, not via Pulse)
+# ----------------------------
+# HTTP settings for Steam Market requests
+STEAM_HTTP_TIMEOUT = 20          # Connection/read timeout in seconds
+STEAM_MAX_RETRIES = 4            # Max retry attempts on 429/5xx errors
+STEAM_BACKOFF_MULT = 2.0         # Exponential backoff multiplier
+STEAM_429_DELAY_SEC = 5.0        # Initial delay on 429 rate limit
+STEAM_DELAY_SEC = 0.3            # Soft delay between requests
+
+# FX rate benchmark item (used to calculate Steam-implied exchange rate)
+# This item should be liquid enough on Steam Market
+STEAM_FX_BENCHMARK_NAME = "Fracture Case"
+
+# FX rate cache TTL in seconds (6 hours default)
+# The rate is cached per currency_id
+STEAM_FX_CACHE_TTL_SEC = 6 * 3600

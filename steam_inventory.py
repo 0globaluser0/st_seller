@@ -8,19 +8,11 @@ from typing import Any, Dict, Optional, Tuple
 
 import requests
 
+# Import SteamAccount and read_steam_accs_txt from steam_market_client
+# New format: name\\currency_id\\http_proxy\\sessionid\\SteamLoginSecure
+from steam_market_client import SteamAccount, read_steam_accs_txt, validate_accounts_or_exit
+
 INV_URL = "https://steamcommunity.com/inventory/{steamid}/{appid}/{contextid}"
-
-
-@dataclass(frozen=True)
-class SteamAccount:
-    """
-    Данные из steam_accs.txt:
-      name\\http_proxy\\sessionid\\SteamLoginSecure
-    """
-    name: str
-    http_proxy: str
-    sessionid: str
-    steam_login_secure: str
 
 
 @dataclass
@@ -28,38 +20,6 @@ class NameFlags:
     market_hash_name: str
     tradable: bool
     marketable: bool
-
-
-def read_steam_accs_txt(path) -> list[SteamAccount]:
-    """
-    Парсит steam_accs.txt, одна строка = один аккаунт:
-      acc_name\\http://user:pass@ip:port\\sessionid\\SteamLoginSecure
-    Пустые строки и строки, начинающиеся с #, игнорируются.
-    """
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    out: list[SteamAccount] = []
-
-    for ln, raw in enumerate(lines, 1):
-        s = raw.strip()
-        if not s or s.startswith("#"):
-            continue
-
-        parts = s.split("\\\\")
-        if len(parts) != 4:
-            # запасной вариант: если разделители случайно одиночные '\'
-            parts = s.split("\\")
-        if len(parts) != 4:
-            raise ValueError(f"{path}: line {ln}: expected 4 fields separated by \\\\ ; got {len(parts)}: {raw!r}")
-
-        name, proxy, sessionid, loginsecure = (p.strip() for p in parts)
-        out.append(SteamAccount(
-            name=name,
-            http_proxy=proxy,
-            sessionid=sessionid,
-            steam_login_secure=loginsecure,
-        ))
-
-    return out
 
 
 def make_session(acc: SteamAccount) -> requests.Session:
