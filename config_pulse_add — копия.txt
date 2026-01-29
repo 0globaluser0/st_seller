@@ -1,0 +1,17 @@
+LISS_DB_PATH = "C:\work\steam\unibot_test last_github1\st9_13_liss_purchase.db"
+STEAM_DB_PATH = "C:\work\steam\unibot_test last_github1\steam_analyser.db"
+
+name_list = "dfsgrgs lisbot"
+
+DIF_CENT = 0.04
+DIF_PERC = 0.02
+
+# задержка между запросами в миллисекундах (например 250 = 0.25 секунды)
+delay = 70
+
+DEVICE_ID = "b96c840553"
+AUTHORIZATION = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCJnL3dzLzIwMDUvMDUvaWRlbnRpdHkvY2xhaW1zL25hbWVpZGVudGlmaWVyIjoiNTczNiIsImlzQWRtaW4iOiJGYWxzZSIsImV4cCI6MTgyODQ0MDk4M30.SjbTRNGK4lRrLuen5kgmZdNR1m4avto7K6J3M-EZYCM"
+COOKIE = ""
+
+FIRST_MARKET = "LisSkins"
+SECOND_MARKET = "Steam"
