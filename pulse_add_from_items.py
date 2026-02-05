@@ -252,6 +252,10 @@ def read_items_txt(path: Path) -> List[str]:
     return items
 
 
+def _fmt_opt2(v: Optional[float]) -> str:
+    return "N/A" if v is None else f"{float(v):.2f}"
+
+
 def _choose_market(steam_rec: float, tm_rec: Optional[float]) -> tuple[str, float, float, Optional[float]]:
     """
     Возвращает:
@@ -369,7 +373,7 @@ def main() -> int:
         raise RuntimeError("В конфиге для Pulse списков должны быть DEVICE_ID и AUTHORIZATION")
 
     # кэш на время запуска, чтобы не пересчитывать одинаковые item_name между аккаунтами
-    rec_cache: Dict[tuple[str, bool, bool], dict] = {}
+    rec_cache: Dict[tuple[str, bool, bool, int], dict] = {}
 
     # ==========================
     # MODE A: из инвентарей аккаунтов (steam_accs.txt)
@@ -423,14 +427,14 @@ def main() -> int:
                 can_sell_steam = bool(flags.marketable)   # Steam market
                 can_sell_tm = bool(flags.tradable)        # TM (trade)
 
-                key = (name, can_sell_steam, can_sell_tm)
+                key = (name, can_sell_steam, can_sell_tm, acc.currency_id)
                 try:
                     if key in rec_cache:
                         res = rec_cache[key]
                     else:
                         res = compute_rec_prices_and_choose(
                             name,
-                            default_acc,
+                            acc,
                             can_sell_steam=can_sell_steam,
                             can_sell_tm=can_sell_tm,
                         )
@@ -462,7 +466,7 @@ def main() -> int:
                     f"steam_rec_usd={res['steam_rec_usd']:.2f} | "
                     f"steam_rec_native={res['steam_rec_native']:.2f} | "
                     f"lowest_native={res['steam_lowest_native']:.2f} | "
-                    f"tm_rec_usd={res['tm_rec']:.2f if res['tm_rec'] is not None else 'N/A'} | "
+                    f"tm_rec_usd={_fmt_opt2(res['tm_rec'])} | "
                     f"chosen={chosen_market}->{second_market} | "
                     f"{res['tm_status']}"
                 )
@@ -548,7 +552,7 @@ def main() -> int:
             f"  steam_rec_usd={res['steam_rec_usd']:.2f} | "
             f"steam_rec_native={res['steam_rec_native']:.2f} | "
             f"lowest_native={res['steam_lowest_native']:.2f} | "
-            f"tm_rec_usd={res['tm_rec']:.2f if res['tm_rec'] is not None else 'N/A'} | "
+            f"tm_rec_usd={_fmt_opt2(res['tm_rec'])} | "
             f"chosen={chosen_market} | {res['tm_status']}"
         )
 
