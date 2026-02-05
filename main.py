@@ -1,12 +1,16 @@
 # main.py
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, Tuple
 
-from pulse_client import fetch_history, PricePoint
+from pulse_client import PricePoint
 from analyzer import compute_support_dual, DualSupportResult, SupportResult
 from tm_client import fetch_tm_history, count_sales_last_days
+from steam_inventory import read_steam_accs_txt, SteamAccount
+from steam_market_client import compute_steam_rec_prices
 import config_console as config
 
 try:
@@ -154,7 +158,24 @@ def _choose_market(steam_rec: float, tm_rec: Optional[float]) -> Tuple[str, floa
 
 
 def main() -> int:
-    print("Rec-price analyzer: Steam(Pulse) + optional TM (market.csgo.com). Type 'exit' to quit.")
+    # --- Load Steam accounts ---
+    accs_path = Path(__file__).resolve().parent / "steam_accs.txt"
+    if not accs_path.exists():
+        print(f"[FATAL] steam_accs.txt not found: {accs_path}")
+        return 1
+
+    accs = read_steam_accs_txt(accs_path)
+    if not accs:
+        print("[FATAL] No valid Steam accounts with proxy/cookies in steam_accs.txt")
+        return 1
+
+    default_acc = accs[0]
+    print(
+        f"Rec-price analyzer: Steam (Market) + optional TM (market.csgo.com). "
+        f"Account: {default_acc.name} | currency_id={default_acc.currency_id}. "
+        f"Type 'exit' to quit."
+    )
+
     while True:
         try:
             item = input("\nItem name> ").strip()
@@ -168,32 +189,44 @@ def main() -> int:
             print("Bye.")
             return 0
 
-        # --- Steam (Pulse) ---
+        # --- Steam (Market) ---
         try:
-            steam_points = fetch_history(item)
+            res = compute_steam_rec_prices(default_acc, item)
         except Exception as e:
-            print(f"[ERROR] Steam(Pulse) fetch: {e}")
+            print(f"[SKIP] Steam Market error: {e}")
             continue
 
-        try:
-            steam_dual: DualSupportResult = compute_support_dual(steam_points)
-        except Exception as e:
-            print(f"[ERROR] Steam(Pulse) analyze failed: {e}")
-            continue
+        steam_points = res["points"]
+        steam_dual: DualSupportResult = res["steam_dual"]
+        steam_rec_usd = res["steam_rec_usd"]
+        steam_rec_native = res["steam_rec_native"]
+        steam_lowest_native = res["steam_lowest_native"]
+        steam_rec_from_graph_native = res["steam_rec_from_graph_native"]
+        fx = res["fx_local_per_usd"]
+        cid = res["currency_id"]
 
-        steam_rec = float(steam_dual.min_support_price)
+        print(
+            f"steam_rec_usd={_fmt_price2(steam_rec_usd)} | "
+            f"steam_rec_native={_fmt_price2(steam_rec_native)} | "
+            f"steam_lowest_native={_fmt_price2(steam_lowest_native)} | "
+            f"graph_native={_fmt_price2(steam_rec_from_graph_native)} | "
+            f"fx_local_per_usd={_fmt(fx)} | currency_id={cid}"
+        )
 
-        _print_header("Steam (Pulse)", item, steam_points, density_share=float(config.MIN_POINTS_SHARE_PER_HOUR))
+        _print_header("Steam (Market)", item, steam_points, density_share=float(config.MIN_POINTS_SHARE_PER_HOUR))
         _print_support(steam_dual.res_count_weighted)
         _print_support(steam_dual.res_points_only)
 
         print()
         print("=" * 150)
-        print(f"STEAM REC_PRICE: {_fmt(steam_rec)}  (chosen method: {steam_dual.chosen_method})")
+        print(
+            f"STEAM REC_PRICE (USD): {_fmt(steam_rec_usd)}  "
+            f"(native: {_fmt(steam_rec_native)}, chosen method: {steam_dual.chosen_method})"
+        )
         print("=" * 150)
 
         # --- TM (market.csgo.com) ---
-        tm_dual, tm_points, tm_status = _try_compute_tm(item, steam_rec)
+        tm_dual, tm_points, tm_status = _try_compute_tm(item, steam_rec_usd)
         print()
         print(tm_status)
 
@@ -209,17 +242,17 @@ def main() -> int:
             print("=" * 150)
 
         # --- Compare / choose ---
-        chosen_market, chosen_rec, cmp_steam, cmp_tm = _choose_market(steam_rec, tm_rec)
+        chosen_market, chosen_rec, cmp_steam, cmp_tm = _choose_market(steam_rec_usd, tm_rec)
 
         print()
         print("=" * 150)
         print("COMPARE (only for choosing market):")
-        print(f"  steam_cmp = steam_rec * {STEAM_COMPARE_FEE} * DIFF_ST_TM({getattr(config, 'DIFF_ST_TM', 1.0)}) = {_fmt(cmp_steam)}")
+        print(f"  steam_cmp = steam_rec_usd * {STEAM_COMPARE_FEE} * DIFF_ST_TM({getattr(config, 'DIFF_ST_TM', 1.0)}) = {_fmt(cmp_steam)}")
         if tm_rec is None:
             print("  tm_cmp    = (TM skipped) -> -inf")
         else:
             print(f"  tm_cmp    = tm_rec * {TM_COMPARE_FEE} = {_fmt(cmp_tm)}")
-        print(f"CHOSEN MARKET: {chosen_market}  |  CHOSEN REC_PRICE (raw): {_fmt_price2(chosen_rec)}")
+        print(f"CHOSEN MARKET: {chosen_market}  |  CHOSEN REC_PRICE (USD): {_fmt_price2(chosen_rec)}")
         print("=" * 150)
 
     return 0

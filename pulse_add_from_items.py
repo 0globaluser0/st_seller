@@ -5,24 +5,25 @@
 
 - Читает items.txt из корня проекта (по одному предмету в строке)
 - Удаляет повторы (сохраняя исходный порядок)
-- Для каждого предмета считает "рек цену" через ваш граф-анализатор (compute_support_dual)
+- Для каждого предмета считает "рек цену" через Steam Market + analyzer (compute_support_dual)
 - Создаёт НОВЫЙ список в Pulse
 - Загружает все предметы в этот список (Steam -> Steam) с параметрами:
     marketHashName = <название>
     count = 1
     firstMarket = "Steam"
-    secondMarket = "Steam"
+    secondMarket = "Steam"|"Tm"
     firstPrice = 1
-    secondPrice = <rec_price>
+    secondPrice = <rec_price> (в USD)
 
 Зависимости:
 - использует API/эндпоинты и разбор конфига по образцу pulse_add_from_db.py
-- использует ваши модули pulse_client.py + analyzer.py + config_console.py для расчёта rec_price
+- использует модули steam_market_client.py + analyzer.py + config_console.py для расчёта rec_price
 """
 
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -30,12 +31,12 @@ from typing import Dict, List, Optional
 
 import requests
 
-from steam_inventory import read_steam_accs_txt, fetch_account_name_flags
+from steam_inventory import read_steam_accs_txt, fetch_account_name_flags, SteamAccount
 
 
 # --- граф-анализатор ---
 import config_console as graph_cfg
-from pulse_client import fetch_history
+from steam_market_client import compute_steam_rec_prices
 from analyzer import compute_support_dual
 
 
@@ -251,27 +252,11 @@ def read_items_txt(path: Path) -> List[str]:
     return items
 
 
-def ensure_graph_auth_from_list_auth() -> None:
-    """
-    В проекте часто список и граф живут на одном домене, но в разных конфиг-файлах.
-    Если в config_console.py токены не заданы, подставим из config_pulse_add.
-    """
-    if not getattr(graph_cfg, "PULSE_DEVICE_ID", "") and DEVICE_ID:
-        graph_cfg.PULSE_DEVICE_ID = DEVICE_ID
-    if not getattr(graph_cfg, "PULSE_AUTHORIZATION", "") and AUTHORIZATION:
-        graph_cfg.PULSE_AUTHORIZATION = AUTHORIZATION
-    if not getattr(graph_cfg, "PULSE_COOKIE", "") and COOKIE:
-        graph_cfg.PULSE_COOKIE = COOKIE
-
-    # по ТЗ: запрос графика с currencyOverride = 1
-    graph_cfg.PULSE_CURRENCY_OVERRIDE = 1
-
-
 def _choose_market(steam_rec: float, tm_rec: Optional[float]) -> tuple[str, float, float, Optional[float]]:
     """
     Возвращает:
       chosen_market: "Steam" или "Tm"
-      chosen_rec_price: raw rec_price выбранной площадки
+      chosen_rec_price: raw rec_price выбранной площадки (USD)
       cmp_steam: steam_rec * 0.87 * DIFF_ST_TM
       cmp_tm: tm_rec * 0.95 (или None если TM не считали)
     ВАЖНО: cmp_* используется ТОЛЬКО для сравнения (как в ТЗ).
@@ -288,17 +273,18 @@ def _choose_market(steam_rec: float, tm_rec: Optional[float]) -> tuple[str, floa
 
 def compute_rec_prices_and_choose(
     item_name: str,
+    default_acc: SteamAccount,
     *,
     can_sell_steam: bool = True,
     can_sell_tm: bool = True,
 ) -> dict:
     """
-    1) Считает rec_price на Steam (Pulse) — всегда.
+    1) Считает rec_price на Steam (Market) — всегда.
     2) По условиям в config_console.py опционально считает rec_price на TM (market.csgo.com).
        ВАЖНО: если Steam недоступен для продажи по этому предмету (can_sell_steam=False),
-       то порог TM_MIN_STEAM_REC_PRICE_TO_CHECK_TM НЕ блокирует расчёт TM (он был для отсечения лишних запросов).
+       то порог TM_MIN_STEAM_REC_PRICE_TO_CHECK_TM НЕ блокирует расчёт TM.
     3) Сравнение (только для выбора площадки):
-         steam_cmp = steam_rec * 0.87 * DIFF_ST_TM
+         steam_cmp = steam_rec_usd * 0.87 * DIFF_ST_TM
          tm_cmp    = tm_rec * 0.95
        выбор делается среди ДОСТУПНЫХ рынков.
     """
@@ -307,12 +293,13 @@ def compute_rec_prices_and_choose(
     if not can_sell_steam and not can_sell_tm:
         raise RuntimeError("item is neither marketable nor tradable on this account")
 
-    # --- Steam ---
-    steam_points = fetch_history(item_name)
-    steam_dual = compute_support_dual(steam_points)
-    steam_rec = float(steam_dual.min_support_price)
+    # --- Steam (Market) ---
+    steam_res = compute_steam_rec_prices(default_acc, item_name)
+    steam_rec_usd = steam_res["steam_rec_usd"]
+    steam_rec_native = steam_res["steam_rec_native"]
+    steam_lowest_native = steam_res["steam_lowest_native"]
 
-    cmp_steam = float(steam_rec) * 0.87 * float(getattr(graph_cfg, "DIFF_ST_TM", 1.0) or 1.0)
+    cmp_steam = float(steam_rec_usd) * 0.87 * float(getattr(graph_cfg, "DIFF_ST_TM", 1.0) or 1.0)
 
     # --- TM gating ---
     tm_rec: Optional[float] = None
@@ -325,8 +312,8 @@ def compute_rec_prices_and_choose(
         thr = float(getattr(graph_cfg, "TM_MIN_STEAM_REC_PRICE_TO_CHECK_TM", 0.0) or 0.0)
         min_sales_2d = int(getattr(graph_cfg, "TM_MIN_SALES_LAST_2DAYS", 0) or 0)
 
-        if can_sell_steam and steam_rec < thr:
-            tm_status = f"TM skipped: steam_rec={steam_rec:.6g} < threshold={thr:.6g}"
+        if can_sell_steam and steam_rec_usd < thr:
+            tm_status = f"TM skipped: steam_rec_usd={steam_rec_usd:.6g} < threshold={thr:.6g}"
         else:
             try:
                 tm_points = fetch_tm_history(item_name)
@@ -347,12 +334,14 @@ def compute_rec_prices_and_choose(
             raise RuntimeError(f"Steam not sellable and TM not available: {tm_status}")
         chosen_market, chosen_rec = "Tm", float(tm_rec)
     elif tm_rec is None or not can_sell_tm:
-        chosen_market, chosen_rec = "Steam", float(steam_rec)
+        chosen_market, chosen_rec = "Steam", float(steam_rec_usd)
     else:
-        chosen_market, chosen_rec, _, _ = _choose_market(steam_rec, tm_rec)
+        chosen_market, chosen_rec, _, _ = _choose_market(steam_rec_usd, tm_rec)
 
     return {
-        "steam_rec": steam_rec,
+        "steam_rec_usd": steam_rec_usd,
+        "steam_rec_native": steam_rec_native,
+        "steam_lowest_native": steam_lowest_native,
         "tm_rec": tm_rec,
         "chosen_market": chosen_market,
         "chosen_rec": chosen_rec,
@@ -368,7 +357,7 @@ def main() -> int:
     ap.add_argument(
         "--accs",
         default=None,
-        help=r"Путь к steam_accs.txt. Формат строки: name\\http_proxy(user:pass@ip:port)\\sessionid\\SteamLoginSecure",
+        help=r"Путь к steam_accs.txt. Формат строки: name\\currency_id\\http_proxy(user:pass@ip:port)\\sessionid\\SteamLoginSecure",
     )
     ap.add_argument("--count", type=int, default=2000, help="Steam inventory page size (обычно 2000)")
     ap.add_argument("--language", default="english", help="Steam inventory language")
@@ -378,8 +367,6 @@ def main() -> int:
 
     if not (DEVICE_ID and AUTHORIZATION):
         raise RuntimeError("В конфиге для Pulse списков должны быть DEVICE_ID и AUTHORIZATION")
-
-    ensure_graph_auth_from_list_auth()
 
     # кэш на время запуска, чтобы не пересчитывать одинаковые item_name между аккаунтами
     rec_cache: Dict[tuple[str, bool, bool], dict] = {}
@@ -395,6 +382,11 @@ def main() -> int:
             raise RuntimeError(f"steam_accs.txt не найден: {accs_path}")
 
         accounts = read_steam_accs_txt(accs_path)
+        if not accounts:
+            print("[FATAL] No valid Steam accounts with proxy/cookies in steam_accs.txt")
+            return 1
+
+        default_acc = accounts[0]
 
         base = NAME_LIST or "inventory"
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -438,6 +430,7 @@ def main() -> int:
                     else:
                         res = compute_rec_prices_and_choose(
                             name,
+                            default_acc,
                             can_sell_steam=can_sell_steam,
                             can_sell_tm=can_sell_tm,
                         )
@@ -463,11 +456,16 @@ def main() -> int:
                     }
                 )
 
-                # короткий лог
-                if res["tm_rec"] is None:
-                    print(f"[{idx}/{len(names)}] {name} | chosen={chosen_market}->{second_market} | steam_rec={res['steam_rec']:.2f} | TM: {res['tm_status']}")
-                else:
-                    print(f"[{idx}/{len(names)}] {name} | chosen={chosen_market}->{second_market} | steam_rec={res['steam_rec']:.2f} | tm_rec={res['tm_rec']:.2f}")
+                # лог
+                print(
+                    f"[{idx}/{len(names)}] {name} | "
+                    f"steam_rec_usd={res['steam_rec_usd']:.2f} | "
+                    f"steam_rec_native={res['steam_rec_native']:.2f} | "
+                    f"lowest_native={res['steam_lowest_native']:.2f} | "
+                    f"tm_rec_usd={res['tm_rec']:.2f if res['tm_rec'] is not None else 'N/A'} | "
+                    f"chosen={chosen_market}->{second_market} | "
+                    f"{res['tm_status']}"
+                )
 
             if not add_items:
                 print("Не удалось подготовить ни одного предмета для загрузки.")
@@ -494,11 +492,25 @@ def main() -> int:
         print("items.txt пуст — нечего загружать.")
         return 0
 
+    # Для режима items.txt тоже нужен Steam аккаунт
+    accs_default_path = root / "steam_accs.txt"
+    if not accs_default_path.exists():
+        print(f"[FATAL] steam_accs.txt not found: {accs_default_path}")
+        return 1
+
+    accounts = read_steam_accs_txt(accs_default_path)
+    if not accounts:
+        print("[FATAL] No valid Steam accounts with proxy/cookies in steam_accs.txt")
+        return 1
+
+    default_acc = accounts[0]
+
     base = NAME_LIST or "items"
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
     list_name = f"{base} [{ts}]"
 
     print(f"Уникальных предметов: {len(items)} (повторы в items.txt автоматически удалены)")
+    print(f"Steam account: {default_acc.name} | currency_id={default_acc.currency_id}")
     print(f"Создаём НОВЫЙ список Pulse: {list_name!r}")
 
     create_list(list_name, sticker=STICKER)
@@ -511,7 +523,7 @@ def main() -> int:
     for idx, name in enumerate(items, 1):
         print(f"[{idx}/{len(items)}] {name}")
         try:
-            res = compute_rec_prices_and_choose(name)
+            res = compute_rec_prices_and_choose(name, default_acc)
         except Exception as e:
             print(f"  [SKIP] не удалось посчитать rec_price: {e}")
             failed.append(name)
@@ -530,6 +542,14 @@ def main() -> int:
                 "secondPrice": float(chosen_rec),
                 "count": 1,
             }
+        )
+
+        print(
+            f"  steam_rec_usd={res['steam_rec_usd']:.2f} | "
+            f"steam_rec_native={res['steam_rec_native']:.2f} | "
+            f"lowest_native={res['steam_lowest_native']:.2f} | "
+            f"tm_rec_usd={res['tm_rec']:.2f if res['tm_rec'] is not None else 'N/A'} | "
+            f"chosen={chosen_market} | {res['tm_status']}"
         )
 
     if not add_items:

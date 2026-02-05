@@ -93,3 +93,19 @@ PRICE_SUPPORT_PERIODS_POINTS = [
         "MIN_WINDOW_VOLUME": 4,   # минимум точек (points_count) в окне
     },
 ]
+
+
+# ----------------------------
+# Steam Market HTTP settings
+# ----------------------------
+STEAM_HTTP_TIMEOUT = (8, 25)        # (connect, read) в секундах
+STEAM_MAX_RETRIES = 4
+STEAM_BACKOFF_MULT = 1.7
+STEAM_429_DELAY_SEC = 3.0
+STEAM_DELAY_SEC = 0.0               # мягкая задержка между запросами
+
+# ----------------------------
+# Steam FX (implied exchange rate)
+# ----------------------------
+STEAM_FX_BENCHMARK_NAME = "Fracture Case"
+STEAM_FX_CACHE_TTL_SEC = 6 * 3600   # 6 часов

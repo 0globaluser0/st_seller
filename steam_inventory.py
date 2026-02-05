@@ -14,10 +14,12 @@ INV_URL = "https://steamcommunity.com/inventory/{steamid}/{appid}/{contextid}"
 @dataclass(frozen=True)
 class SteamAccount:
     """
-    Данные из steam_accs.txt:
-      name\\http_proxy\\sessionid\\SteamLoginSecure
+    Данные из steam_accs.txt (5 полей):
+      name\\currency_id\\http_proxy(user:pass@ip:port)\\sessionid\\SteamLoginSecure
+    currency_id: 37=KZT, 5=RUB, 1=USD и т.д.
     """
     name: str
+    currency_id: int
     http_proxy: str
     sessionid: str
     steam_login_secure: str
@@ -30,11 +32,22 @@ class NameFlags:
     marketable: bool
 
 
+def _normalize_proxy(proxy: str) -> str:
+    """Нормализует proxy: добавляет http:// если нет схемы."""
+    p = proxy.strip()
+    if not p:
+        return ""
+    if not p.startswith("http://") and not p.startswith("https://"):
+        p = "http://" + p
+    return p
+
+
 def read_steam_accs_txt(path) -> list[SteamAccount]:
     """
-    Парсит steam_accs.txt, одна строка = один аккаунт:
-      acc_name\\http://user:pass@ip:port\\sessionid\\SteamLoginSecure
+    Парсит steam_accs.txt, одна строка = один аккаунт (5 полей):
+      name\\currency_id\\http_proxy(user:pass@ip:port)\\sessionid\\SteamLoginSecure
     Пустые строки и строки, начинающиеся с #, игнорируются.
+    Аккаунты с пустым proxy/sessionid/steamLoginSecure пропускаются (warning).
     """
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     out: list[SteamAccount] = []
@@ -45,15 +58,38 @@ def read_steam_accs_txt(path) -> list[SteamAccount]:
             continue
 
         parts = s.split("\\\\")
-        if len(parts) != 4:
-            # запасной вариант: если разделители случайно одиночные '\'
+        if len(parts) != 5:
             parts = s.split("\\")
-        if len(parts) != 4:
-            raise ValueError(f"{path}: line {ln}: expected 4 fields separated by \\\\ ; got {len(parts)}: {raw!r}")
+        if len(parts) != 5:
+            print(f"[WARN] {path}: line {ln}: expected 5 fields separated by \\\\ ; got {len(parts)}: {raw!r}  -> SKIP")
+            continue
 
-        name, proxy, sessionid, loginsecure = (p.strip() for p in parts)
+        name, currency_id_str, proxy_raw, sessionid, loginsecure = (p.strip() for p in parts)
+
+        # currency_id
+        try:
+            currency_id = int(currency_id_str)
+        except (ValueError, TypeError):
+            print(f"[WARN] {path}: line {ln}: invalid currency_id={currency_id_str!r} -> SKIP")
+            continue
+
+        # proxy обязателен
+        proxy = _normalize_proxy(proxy_raw)
+        if not proxy:
+            print(f"[WARN] {path}: line {ln}: proxy is empty for account={name!r} -> SKIP")
+            continue
+
+        # sessionid / steamLoginSecure обязательны
+        if not sessionid:
+            print(f"[WARN] {path}: line {ln}: sessionid is empty for account={name!r} -> SKIP")
+            continue
+        if not loginsecure:
+            print(f"[WARN] {path}: line {ln}: steamLoginSecure is empty for account={name!r} -> SKIP")
+            continue
+
         out.append(SteamAccount(
             name=name,
+            currency_id=currency_id,
             http_proxy=proxy,
             sessionid=sessionid,
             steam_login_secure=loginsecure,
@@ -63,19 +99,26 @@ def read_steam_accs_txt(path) -> list[SteamAccount]:
 
 
 def make_session(acc: SteamAccount) -> requests.Session:
+    if not acc.http_proxy:
+        raise ValueError(
+            f"[FATAL] Proxy is required for account={acc.name!r} but is empty/missing. "
+            "All Steam requests MUST go through a proxy."
+        )
+
     s = requests.Session()
     s.headers.update({
-        "User-Agent": "Mozilla/5.0 (compatible; cs2-inventory-bot/1.0)",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        ),
         "Accept": "application/json,text/plain,*/*",
+        "Accept-Language": "en-US,en;q=0.9",
     })
 
-    if acc.steam_login_secure:
-        s.cookies.set("steamLoginSecure", acc.steam_login_secure, domain="steamcommunity.com", path="/")
-    if acc.sessionid:
-        s.cookies.set("sessionid", acc.sessionid, domain="steamcommunity.com", path="/")
+    s.cookies.set("steamLoginSecure", acc.steam_login_secure, domain="steamcommunity.com", path="/")
+    s.cookies.set("sessionid", acc.sessionid, domain="steamcommunity.com", path="/")
 
-    if acc.http_proxy:
-        s.proxies.update({"http": acc.http_proxy, "https": acc.http_proxy})
+    s.proxies.update({"http": acc.http_proxy, "https": acc.http_proxy})
 
     return s
 
